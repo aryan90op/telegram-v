@@ -1,209 +1,213 @@
 import os
-from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, filters, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# --- CONFIG ---
-BOT_TOKEN = "8446746599:AAHbefmZlzWyUEjB1sGgXfV8EraCdaDUJ9c"   # put your BotFather token
-OWNER_ID =  6497509361        # your Telegram numeric ID
-ALLOWED_USERS = {OWNER_ID}     # only owner at start
+# ==============================
+# ENV VARIABLES
+# ==============================
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+allowed_users = set([OWNER_ID])
 
-# --- STATES ---
-(
-    ADMIN_NUMBERS, ADMIN_NAME,
-    NEAVY_NUMBERS, NEAVY_NAME,
-    VCF_FILENAME,
-    TXT_FILE, TXT_SPLIT, TXT_FILENAME, TXT_CONTACTNAME
-) = range(9)
+# ==============================
+# STATES
+# ==============================
+TXT_FILE, TXT_SPLIT, TXT_NAME, TXT_CNAME = range(4)
+ADMIN_NUMBERS, ADMIN_NAME, NEAVY_NUMBERS, NEAVY_NAME, FINAL_VCF_NAME = range(5)
 
+# ==============================
+# HELPERS
+# ==============================
+def make_vcf_entry(name, number):
+    return f"BEGIN:VCARD\nVERSION:3.0\nFN:{name}\nTEL:{number}\nEND:VCARD\n"
 
-# --- OWNER SYSTEM ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_access(update: Update):
     user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ You are not authorized to use this bot.")
-        return
-    await update.message.reply_text("WELCOME 🤗 THIS BOT WAS MADE BY @random_0988\n\nCommands:\n/adminvcf - Create Admin+Neavy VCF\n/txtvcf - Convert TXT → VCF\n/adduser <id>\n/removeuser <id>")
+    if user_id not in allowed_users:
+        await update.message.reply_text("🚫 Access Denied!\nOnly authorized users can use this bot.")
+        return False
+    return True
 
+# ==============================
+# COMMANDS
+# ==============================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤗 WELCOME!\n\nTHIS BOT WAS MADE BY @random_0988\n\n"
+        "Use:\n"
+        "• /txtvcf → Convert TXT → VCF\n"
+        "• /adminvcf → Create Admin + Neavy VCF\n"
+        "• /myid → Get your Telegram ID\n"
+    )
+
+async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your Telegram ID: {update.effective_user.id}")
 
 async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Only owner can add users.")
         return
     try:
         uid = int(context.args[0])
-        ALLOWED_USERS.add(uid)
-        await update.message.reply_text(f"✅ Added user {uid}")
+        allowed_users.add(uid)
+        await update.message.reply_text(f"✅ User {uid} added.")
     except:
-        await update.message.reply_text("Usage: /adduser <id>")
-
+        await update.message.reply_text("⚠️ Usage: /adduser <telegram_id>")
 
 async def removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Only owner can remove users.")
         return
     try:
         uid = int(context.args[0])
-        ALLOWED_USERS.discard(uid)
-        await update.message.reply_text(f"❌ Removed user {uid}")
+        if uid in allowed_users:
+            allowed_users.remove(uid)
+            await update.message.reply_text(f"🚫 User {uid} removed.")
+        else:
+            await update.message.reply_text("⚠️ User not found in allowed list.")
     except:
-        await update.message.reply_text("Usage: /removeuser <id>")
+        await update.message.reply_text("⚠️ Usage: /removeuser <telegram_id>")
 
-
-# --- ADMIN + NEAVY ---
-async def adminvcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Not authorized.")
-        return ConversationHandler.END
-    await update.message.reply_text("📌 Send ADMIN numbers separated by commas (,)")
-    return ADMIN_NUMBERS
-
-
-async def admin_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["admin_numbers"] = update.message.text.split(",")
-    await update.message.reply_text("✍️ Enter base name for ADMIN (e.g., F)")
-    return ADMIN_NAME
-
-
-async def admin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["admin_name"] = update.message.text.strip()
-    await update.message.reply_text("📌 Send NEAVY numbers separated by commas (,)")
-    return NEAVY_NUMBERS
-
-
-async def neavy_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["neavy_numbers"] = update.message.text.split(",")
-    await update.message.reply_text("✍️ Enter base name for NEAVY (e.g., A)")
-    return NEAVY_NAME
-
-
-async def neavy_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["neavy_name"] = update.message.text.strip()
-    await update.message.reply_text("💾 Enter filename for VCF (without .vcf)")
-    return VCF_FILENAME
-
-
-async def vcf_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    filename = update.message.text.strip() + ".vcf"
-    admin_numbers = context.user_data["admin_numbers"]
-    admin_name = context.user_data["admin_name"]
-    neavy_numbers = context.user_data["neavy_numbers"]
-    neavy_name = context.user_data["neavy_name"]
-
-    contacts = []
-    # Admin
-    for i, num in enumerate(admin_numbers, 1):
-        contacts.append((f"{admin_name}{i}", num.strip()))
-    # Neavy
-    for i, num in enumerate(neavy_numbers, 1):
-        contacts.append((f"{neavy_name}{i}", num.strip()))
-
-    with open(filename, "w") as f:
-        for name, num in contacts:
-            f.write("BEGIN:VCARD\nVERSION:3.0\n")
-            f.write(f"N:{name};;;\nFN:{name}\n")
-            f.write(f"TEL:{num}\nEND:VCARD\n")
-
-    with open(filename, "rb") as f:
-        await update.message.reply_document(InputFile(f, filename=filename), caption="✅ Generated VCF")
-
-    os.remove(filename)
-    return ConversationHandler.END
-
-
-# --- TXT → VCF ---
+# ==============================
+# TXT → VCF HANDLER
+# ==============================
 async def txtvcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Not authorized.")
+    if not await check_access(update):
         return ConversationHandler.END
-    await update.message.reply_text("📂 Send your .txt file with numbers")
+    await update.message.reply_text("📂 Send me your .txt file with numbers.")
     return TXT_FILE
 
-
-async def txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    path = await doc.get_file()
-    file_path = "numbers.txt"
-    await path.download_to_drive(file_path)
-
-    with open(file_path) as f:
-        numbers = [line.strip() for line in f if line.strip()]
-    context.user_data["txt_numbers"] = numbers
-
-    await update.message.reply_text("🔢 How many contacts per VCF?")
+    file = await doc.get_file()
+    content = await file.download_as_bytearray()
+    numbers = content.decode("utf-8").splitlines()
+    context.user_data["numbers"] = [n.strip() for n in numbers if n.strip()]
+    await update.message.reply_text(f"✅ Got {len(context.user_data['numbers'])} numbers.\nHow many contacts per VCF?")
     return TXT_SPLIT
 
+async def handle_txt_split(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["split"] = int(update.message.text)
+    await update.message.reply_text("📛 Enter base VCF file name:")
+    return TXT_NAME
 
-async def txt_split(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["txt_split"] = int(update.message.text)
-    await update.message.reply_text("💾 Enter base filename (e.g., A4F)")
-    return TXT_FILENAME
+async def handle_txt_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["vcf_name"] = update.message.text
+    await update.message.reply_text("👤 Enter base contact name:")
+    return TXT_CNAME
 
+async def handle_txt_cname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cname = update.message.text
+    numbers = context.user_data["numbers"]
+    split = context.user_data["split"]
+    base_name = context.user_data["vcf_name"]
 
-async def txt_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["txt_filename"] = update.message.text.strip()
-    await update.message.reply_text("✍️ Enter base contact name (e.g., A4GF)")
-    return TXT_CONTACTNAME
-
-
-async def txt_contactname(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    basefile = context.user_data["txt_filename"]
-    basename = update.message.text.strip()
-    split = context.user_data["txt_split"]
-    numbers = context.user_data["txt_numbers"]
-
-    file_count = 1
+    files = []
     for i in range(0, len(numbers), split):
-        chunk = numbers[i:i+split]
-        filename = f"{basefile}{file_count}.vcf"
+        part = numbers[i:i+split]
+        vcf_content = ""
+        for idx, num in enumerate(part, start=1):
+            contact_name = f"{cname}{i//split+idx}"
+            vcf_content += make_vcf_entry(contact_name, num)
+        filename = f"{base_name}{i//split+1}.vcf"
         with open(filename, "w") as f:
-            for j, num in enumerate(chunk, 1):
-                cname = f"{basename}{j}"
-                f.write("BEGIN:VCARD\nVERSION:3.0\n")
-                f.write(f"N:{cname};;;\nFN:{cname}\n")
-                f.write(f"TEL:{num}\nEND:VCARD\n")
-        with open(filename, "rb") as f:
-            await update.message.reply_document(InputFile(f, filename=filename), caption=f"📁 {filename}")
-        os.remove(filename)
-        file_count += 1
+            f.write(vcf_content)
+        await update.message.reply_document(document=open(filename, "rb"))
+        files.append(filename)
 
+    await update.message.reply_text("✅ TXT → VCF conversion complete.")
     return ConversationHandler.END
 
+# ==============================
+# ADMIN + NEAVY HANDLER
+# ==============================
+async def adminvcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return ConversationHandler.END
+    await update.message.reply_text("📞 Enter admin numbers (comma separated):")
+    return ADMIN_NUMBERS
 
-# --- MAIN ---
+async def handle_admin_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["admin_numbers"] = [n.strip() for n in update.message.text.split(",") if n.strip()]
+    await update.message.reply_text("👤 Enter base name for admin contacts:")
+    return ADMIN_NAME
+
+async def handle_admin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["admin_name"] = update.message.text
+    await update.message.reply_text("📞 Enter neavy numbers (comma separated):")
+    return NEAVY_NUMBERS
+
+async def handle_neavy_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["neavy_numbers"] = [n.strip() for n in update.message.text.split(",") if n.strip()]
+    await update.message.reply_text("👤 Enter base name for neavy contacts:")
+    return NEAVY_NAME
+
+async def handle_neavy_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["neavy_name"] = update.message.text
+    await update.message.reply_text("💾 Enter final VCF file name:")
+    return FINAL_VCF_NAME
+
+async def handle_final_vcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_numbers = context.user_data["admin_numbers"]
+    neavy_numbers = context.user_data["neavy_numbers"]
+    admin_name = context.user_data["admin_name"]
+    neavy_name = context.user_data["neavy_name"]
+    filename = update.message.text + ".vcf"
+
+    vcf_content = ""
+    for idx, num in enumerate(admin_numbers, start=1):
+        vcf_content += make_vcf_entry(f"{admin_name}{idx}", num)
+    for idx, num in enumerate(neavy_numbers, start=1):
+        vcf_content += make_vcf_entry(f"{neavy_name}{idx}", num)
+
+    with open(filename, "w") as f:
+        f.write(vcf_content)
+
+    await update.message.reply_document(document=open(filename, "rb"))
+    await update.message.reply_text("✅ Admin + Neavy VCF created.")
+    return ConversationHandler.END
+
+# ==============================
+# MAIN
+# ==============================
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("adduser", adduser))
     app.add_handler(CommandHandler("removeuser", removeuser))
 
-    admin_conv = ConversationHandler(
-        entry_points=[CommandHandler("adminvcf", adminvcf)],
-        states={
-            ADMIN_NUMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_numbers)],
-            ADMIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_name)],
-            NEAVY_NUMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, neavy_numbers)],
-            NEAVY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, neavy_name)],
-            VCF_FILENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, vcf_filename)],
-        },
-        fallbacks=[],
-    )
-
+    # TXT → VCF Conversation
     txt_conv = ConversationHandler(
         entry_points=[CommandHandler("txtvcf", txtvcf)],
         states={
-            TXT_FILE: [MessageHandler(filters.Document.TEXT, txt_file)],
-            TXT_SPLIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, txt_split)],
-            TXT_FILENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, txt_filename)],
-            TXT_CONTACTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, txt_contactname)],
+            TXT_FILE: [MessageHandler(filters.Document.FileExtension("txt"), handle_txt_file)],
+            TXT_SPLIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_txt_split)],
+            TXT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_txt_name)],
+            TXT_CNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_txt_cname)],
         },
         fallbacks=[],
     )
-
-    app.add_handler(admin_conv)
     app.add_handler(txt_conv)
+
+    # Admin + Neavy Conversation
+    admin_conv = ConversationHandler(
+        entry_points=[CommandHandler("adminvcf", adminvcf)],
+        states={
+            ADMIN_NUMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_numbers)],
+            ADMIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_name)],
+            NEAVY_NUMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_neavy_numbers)],
+            NEAVY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_neavy_name)],
+            FINAL_VCF_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_final_vcf)],
+        },
+        fallbacks=[],
+    )
+    app.add_handler(admin_conv)
 
     app.run_polling()
 
-
 if __name__ == "__main__":
     main()
-                                         
+    
